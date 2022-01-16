@@ -1,16 +1,17 @@
 (ns cljs-playground.core
-  (:require [applied-science.js-interop :as j]
-            [cljs.core :refer [js->clj]]
-            [cljs.core.async :as async :refer-macros [go] :refer [<! >!]]
-            [cljs-http.client :as http]
-            [cljs.reader :refer [read-string]]
-            [clojure.pprint :refer [pprint]]
-            [clojure.string]
-            [com.rpl.specter :as s :refer-macros [select transform]]
-            [datascript.core :as d]
-            [promesa.core :as p]))
+  (:require
+   [applied-science.js-interop :as j]
+   [cljs.core :refer [js->clj]]
+   [cljs.core.async :as async :refer-macros [go] :refer [<! >!]]
+   [cljs-http.client :as http]
+   [cljs.reader :refer [read-string]]
+   [clojure.pprint :refer [pprint]]
+   [clojure.string]
+   [com.rpl.specter :as s :refer-macros [select transform]]
+   [datascript.core :as d]
+   [promesa.core :as p]))
 
-(js/logseq.App.showMsg "Hello from Clojure!")
+;(js/logseq.App.showMsg "Hello from Clojure!")
 
 (defn main []
   (js/logseq.App.showMsg "Hello from Clojure!"))
@@ -24,16 +25,16 @@
 (defn cljify [obj & args]
   (let [jsargs (mapv clj->js args)]
     (-> (apply (partial j/call obj) args)
-        (p/then #(js->clj % :keywordize-keys true)))) )
+        (p/then #(js->clj % :keywordize-keys true)))))
 
 (def get-page (partial cljify js/logseq.Editor :getPage))
 (def create-page (partial cljify js/logseq.Editor :createPage))
 (def insert-block (partial cljify js/logseq.Editor :insertBlock))
 (def insert-batch-block (partial cljify js/logseq.Editor :insertBatchBlock))
 
-(defn things-page [] 
+(defn things-page []
   (p/let [page (get-page page-name)]
-         (if page page (create-page page-name))))
+    (if page page (create-page page-name))))
 
 (defn printp [promise] (p/then promise prn))
 
@@ -55,28 +56,57 @@
 ;;       (p/then (fn [page]))))
 
 
-
-
-  (defonce data (atom nil))
-
-;; (def schemaless- db (d/create-conn {}))
-  
-(defonce db
+(def dbr
   (d/create-conn
    {:things.area/uuid {:db/unique :db.unique/identity}
     :things.task/uuid {:db/unique :db.unique/identity}
     :things.checklist/uuid  {:db/unique :db.unique/identity}
-    ;:things.project/uuid {:db/unique :db.unique/identity}
     :things.task/area {:db/valueType :db.type/ref}
-    ;:things.task/project {:db/valueType :db/ref}
+    :things.task/project {:db/valueType :db.type/ref}
     :things.checklist/task {:db/valueType :db.type/ref}}))
 
-  (defn update-refs [data]
-    (->> data
-         (transform [s/ALL (s/must :things.task/area)] #(do [:things.area/uuid %]))
-         (transform [s/ALL (s/must :things.task/project)] #(do [:things.project/uuid %]))
-         (transform [s/ALL (s/must :things.checklist/task)] #(do [:things.task/uuid %]))))
-  
+
+(defn get-areas []
+  (d/q '[:find (pull ?a [*])
+         :where [?a :things.area/uuid]] @dbr))
+
+
+(defn go-get-data-from-proxy []
+  (go (:body (<! (http/get "http://localhost:7980")))))
+
+
+(defn go-load-db! []
+  (go (d/transact! dbr (<! go-get-data-from-proxy))))
+
+
+; repl
+(do
+  ;; (defonce data (atom nil))
+
+  ;; (defn go-get-data-from-atom []
+  ;;   (go @data))
+
+  ;; (defn go-load-data! []
+  ;;   (go (reset! data (<! (go-get-data-from-proxy)))))
+
+
+;;
+;; repl state
+  (def rs
+    (atom
+     (as->  {} sys
+       ;(assoc sys :get-areas (partial get-areas (:get-data sys)))
+       )))
+
+;; repl call 
+  (defn rc [sys kw & args]
+    (let [v (get sys kw)]
+      (if (ifn? v) (apply v args)
+          v)))
+  )
+
+; (rc @rs :get-data)
+
 (comment
   ; (js/logseq.App.showMsg "hi")
   ; 
@@ -95,12 +125,19 @@
   ;(printp (j/call js/logseq.DB :datascriptQuery "[:find (pull ?e [*]) :where [?e :block/scheduled ?d]]"))
   (printp (q '[:find (pull ?e [*]) :where [?e :block/scheduled ?d]]))
 
-   
+
 
   (go (reset! data   (:body (<! (http/get "http://localhost:7980")))))
-  
-  (swap! data update-refs)
-  
+
+  (def d2 (prepare-data @data))
+
+  (def areas (filterv :things.area/uuid @data))
+  (def p1 (filterv #(= (:things.task/uuid %) "24yQzbs6h8wKRMnxmMREqC") @data))
+  (def p2 (filterv #(= (:things.task/project %) [:things.task/uuid "24yQzbs6h8wKRMnxmMREqC"]) @data))
+
+
+  (do (d/transact! db d2) nil)
+
   (do (d/transact! db (take 20 @data)) nil)
   (do (d/transact! db @data) nil)
 
@@ -116,7 +153,7 @@
               :where [?a :things.area/title "Family"]]
             @db)
       pprint)
-  
+
   (-> (d/q  '[:find (pull ?t [:things.task/title])
               :where
               [?a :things.area/title "Family"]
@@ -125,14 +162,32 @@
               [?t :things.task/status 0]]
             @db)
       pprint)
-  
 
-  (-> (d/q  '[:find (pull ?t [*])
+
+  ; structured
+  (-> (d/q  '[:find
+              (pull ?a [:things.area/title
+                        {:things.task/_area
+                         [:things.task/title
+                          {:things.task/_project [:things.task/title]}]}])
               :where
               [?a :things.area/title "Family"]
-              [?t :things.task/area ?a]]
+              ;[?t :things.task/area ?a]
+              ;[?c :things.task/project ?t]
+              ]
             @db)
-  )
-)
+      pprint)
 
-  
+  (-> (d/q  '[:find
+              (pull ?a [:things.area/title {:things.task/_area (?t [:things.task/title])}])
+              :where
+              [?a :things.area/title "Family"]
+              [?t :things.task/area ?a]
+              ;[(get-else $ ?t :document/users nil) ?u]
+              ;[(nil? ?u)]
+              ;[?c :things.task/project ?t]
+              ]
+            @db)
+      pprint))
+
+
