@@ -76,8 +76,12 @@
 
 
 (defn go-load-db! []
-  (go (d/transact! dbr (<! go-get-data-from-proxy))))
+  (go (d/transact! dbr (<! (go-get-data-from-proxy)))))
 
+(defn go-pprint [ch] (go (try (pprint (<! ch))
+                              (catch js/Error err
+                                     (pprint err)))
+                         ))
 
 ; repl
 (do
