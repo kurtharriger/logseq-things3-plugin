@@ -59,9 +59,23 @@
 
   (defonce data (atom nil))
 
-(defonce db (d/create-conn {}))
+;; (def schemaless- db (d/create-conn {}))
+  
+(defonce db
+  (d/create-conn
+   {:things.area/uuid {:db/unique :db.unique/identity}
+    :things.task/uuid {:db/unique :db.unique/identity}
+    :things.checklist/uuid  {:db/unique :db.unique/identity}
+    ;:things.project/uuid {:db/unique :db.unique/identity}
+    :things.task/area {:db/valueType :db.type/ref}
+    ;:things.task/project {:db/valueType :db/ref}
+    :things.checklist/task {:db/valueType :db.type/ref}}))
 
-(defn remove-nils [data] (s/setval [s/ALL s/MAP-VALS nil?] s/NONE data))
+  (defn update-refs [data]
+    (->> data
+         (transform [s/ALL (s/must :things.task/area)] #(do [:things.area/uuid %]))
+         (transform [s/ALL (s/must :things.task/project)] #(do [:things.project/uuid %]))
+         (transform [s/ALL (s/must :things.checklist/task)] #(do [:things.task/uuid %]))))
   
 (comment
   ; (js/logseq.App.showMsg "hi")
@@ -85,17 +99,29 @@
 
   (go (reset! data   (:body (<! (http/get "http://localhost:7980")))))
   
-  (d/transact! db @data)
+  (swap! data update-refs)
+  
+  (do (d/transact! db (take 20 @data)) nil)
+  (do (d/transact! db @data) nil)
 
-  (d/q  '[:find (pull ?a [*]) .
-          :where [?a :things.area/title "Family"]]
-        @db)
+  (-> (d/q '[:find ?e  :where [?e :things.area/uuid]] @db)
+      count)
+  (-> (d/q '[:find ?e  :where [?e :things.task/uuid]] @db)
+      count)
+  (-> (d/q '[:find ?e  :where [?e :things.checklist/uuid]] @db)
+      count)
+
+
+  (-> (d/q  '[:find (pull ?a [*]) .
+              :where [?a :things.area/title "Family"]]
+            @db)
+      pprint)
   
   (-> (d/q  '[:find (pull ?t [:things.task/title])
               :where
               [?a :things.area/title "Family"]
-              [?a :things.area/uuid ?auuid]
-              [?t :things.task/area ?auuid]
+              ;[?a :things.area/uuid ?auuid]
+              ;[?t :things.task/area ?auuid]
               [?t :things.task/status 0]]
             @db)
       pprint)
