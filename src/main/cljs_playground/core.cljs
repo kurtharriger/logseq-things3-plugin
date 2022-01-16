@@ -21,37 +21,49 @@
   (-> (js/logseq.ready main)
       (.catch js/console.error)))
 
-(def page-name "Things")
+(def page-name "Things2")
 
-(defn cljify [obj & args]
+;; (defn cljify [obj & args]
+;;   (let [jsargs (mapv clj->js args)]
+;;     (-> (apply (partial j/call obj) args)
+;;         (p/then #(js->clj % :keywordize-keys true)))))
+
+;; (defn cljify [obj & args]
+;;   (let [jsargs (mapv clj->js args)]
+;;     (go (->
+;;          (<!p (apply (partial j/call obj) args))
+;;          (js->clj % :keywordize-keys true)))))
+
+
+(defn logseq [obj method & args]
   (let [jsargs (mapv clj->js args)]
-    (-> (apply (partial j/call obj) args)
-        (p/then #(js->clj % :keywordize-keys true)))))
+    (go-promise (-> (<!p (apply (partial j/call obj method) jsargs))
+                    (js->clj  :keywordize-keys true)))))
 
-(def get-page (partial cljify js/logseq.Editor :getPage))
-(def create-page (partial cljify js/logseq.Editor :createPage))
-(def insert-block (partial cljify js/logseq.Editor :insertBlock))
-(def insert-batch-block (partial cljify js/logseq.Editor :insertBatchBlock))
+(defn gprint [value] (go (pprint (wa/<?maybe value))))
+(def get-current-page (partial logseq js/logseq.Editor :getCurrentPage))
+(def get-page (partial logseq js/logseq.Editor :getPage))
+
+(def show-msg (partial logseq js/logseq.App :showMsg))
+(def create-page (partial logseq js/logseq.Editor :createPage))
+(def insert-editing-at-cursor  (partial logseq js/logseq.Editor :insertAtEditingCursor))
+(def insert-block (partial logseq js/logseq.Editor :insertBlock))
+(def insert-batch-block (partial logseq js/logseq.Editor :insertBatchBlock))
 
 (defn things-page []
-  (p/let [page (get-page page-name)]
-    (if page page (create-page page-name))))
+  (go 
+    (or (<? (get-page page-name)) (<? (create-page page-name)))))
 
-(defn printp [promise] (p/then promise prn))
+(def datascriptQuery (partial logseq js/logseq.DB :datascriptQuery))
 
-(def datascriptQuery* (partial cljify js/logseq.DB :datascriptQuery))
-
-(defn q [query]
-  (datascriptQuery* (pr-str query)))
+(def q datascriptQuery))
 
 
 
 (defn find-logseq-things-blocks []
-  (go
-    (<!p
-     (q '[:find (pull ?b [*])
+     (datascriptQuery* '[:find (pull ?b [*])
           :where [?b :block/properties ?p]
-          [(some ?p [:things.area/uuid :things.task/uuid :things.checklist/uuid])]]))))
+          [(some ?p [:things.area/uuid :things.task/uuid :things.checklist/uuid])]]))
 
 
 (defn find-logseq-things-task-blocks []
@@ -65,7 +77,12 @@
 (defn find-logseq-things-area-blocks []
   (q '[:find (pull ?b [*])
           :where [?b :block/properties ?p]
-          [(contains? ?p :things.task/uuid)]]))
+          [(contains? ?p :things.area/uuid)]]))
+
+(defn find-logseq-things-area-blocks []
+  (q '[:find (pull ?b [*])
+       :where [?b :block/properties ?p]
+       [(contains? ?p :things.area/uuid)]]))
 
 ;; (def get-page [& args])
 ;; (defn jcall []
