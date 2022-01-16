@@ -8,7 +8,8 @@
   [cljs-http/cljs-http  "0.1.46"]
   [org.clojure/core.async "1.5.648"]
   [com.rpl/specter "1.1.3"]
-  [datascript "1.3.5"]]
+  [datascript "1.3.5"]
+  [com.wsscode/async "2021.01.15"]]
 
  :dev-http {8080 "./"}
 

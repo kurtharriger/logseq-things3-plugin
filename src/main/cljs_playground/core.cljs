@@ -2,14 +2,15 @@
   (:require
    [applied-science.js-interop :as j]
    [cljs.core :refer [js->clj]]
-   [cljs.core.async :as async :refer-macros [go] :refer [<! >!]]
+   ;[cljs.core.async :as async :refer-macros [go] :refer [<! >!]]
    [cljs-http.client :as http]
    [cljs.reader :refer [read-string]]
    [clojure.pprint :refer [pprint]]
    [clojure.string]
    [com.rpl.specter :as s :refer-macros [select transform]]
    [datascript.core :as d]
-   [promesa.core :as p]))
+   [promesa.core :as p]
+   [com.wsscode.async.async-cljs :as wa :refer [go-promise <? <!p <! go]]))
 
 ;(js/logseq.App.showMsg "Hello from Clojure!")
 
@@ -44,6 +45,28 @@
   (datascriptQuery* (pr-str query)))
 
 
+
+(defn find-logseq-things-blocks []
+  (go
+    (<!p
+     (q '[:find (pull ?b [*])
+          :where [?b :block/properties ?p]
+          [(some ?p [:things.area/uuid :things.task/uuid :things.checklist/uuid])]]))))
+
+
+(defn find-logseq-things-task-blocks []
+  (go
+    (<!p
+      (q '[:find (pull ?b [*])
+           :where [?b :block/properties ?p]
+           [(contains? ?p :things.task/uuid)]]))))
+
+
+(defn find-logseq-things-area-blocks []
+  (q '[:find (pull ?b [*])
+          :where [?b :block/properties ?p]
+          [(contains? ?p :things.task/uuid)]]))
+
 ;; (def get-page [& args])
 ;; (defn jcall []
 ;;   (-> (p/call js/logseq.Editor :getPage page-name)))
@@ -56,7 +79,7 @@
 ;;       (p/then (fn [page]))))
 
 
-(def dbr
+(defonce dbr
   (d/create-conn
    {:things.area/uuid {:db/unique :db.unique/identity}
     :things.task/uuid {:db/unique :db.unique/identity}
@@ -70,6 +93,10 @@
   (d/q '[:find (pull ?a [*])
          :where [?a :things.area/uuid]] @dbr))
 
+(defn get-projects []
+  (d/q '[:find (pull ?p [*])
+         :where [?t :things.task/project ?p]] @dbr))
+
 
 (defn go-get-data-from-proxy []
   (go (:body (<! (http/get "http://localhost:7980")))))
@@ -78,10 +105,7 @@
 (defn go-load-db! []
   (go (d/transact! dbr (<! (go-get-data-from-proxy)))))
 
-(defn go-pprint [ch] (go (try (pprint (<! ch))
-                              (catch js/Error err
-                                     (pprint err)))
-                         ))
+(defn go-pprint [value] (go (pprint (wa/<?maybe value))))
 
 ; repl
 (do
@@ -192,6 +216,21 @@
               ;[?c :things.task/project ?t]
               ]
             @db)
-      pprint))
+      pprint)
+  
+  
+
+  (go 
+    (pprint 
+       (<!p
+        (q '[:find (pull ?b [*])
+             :where [?b :block/properties ?p]
+             [(contains? ?p :things.task/uuid)]
+             ]))))
+  
+  
+  
+  ;
+  )
 
 
