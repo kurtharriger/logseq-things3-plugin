@@ -1,22 +1,17 @@
 (ns cljs-playground.core
   (:require
-   [cljs.core.async :as async]
-   [clojure.walk :as walk]
    [applied-science.js-interop :as j]
-   [cljs.core :refer [js->clj]]
    [cljs-http.client :as http]
    [cljs.reader :refer [read-string]]
    [clojure.pprint :refer [pprint]]
-   [clojure.string]
-   [com.rpl.specter :as s :refer-macros [select transform]]
+   ;[clojure.string]
+   [clojure.walk :as walk]
+   ;[com.rpl.specter :as s :refer-macros [select transform]]
    [datascript.core :as d]
    [com.wsscode.async.async-cljs :as wa :refer [go-promise  <? <?maybe]]
-   [tick.core :as tick]
-   ["moment" :as moment]
    [cljs-time.core :as t]
    [cljs-time.coerce :as tc]
-   [cljs-time.format :as tf]
-   ))
+   [cljs-time.format :as tf]))
 
 
 (def debug (partial println "debug:"))
