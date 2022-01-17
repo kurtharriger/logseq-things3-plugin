@@ -18,14 +18,15 @@
    [cljs-time.format :as tf]
    ))
 
+
 (def debug (partial println "debug:"))
 ;(def trace (partial println "trace:"))
 (def trace (constantly nil))
-
-
 (defn gp [value & args]
-  (go-promise (pprint (wa/<?maybe
+  (go-promise (pprint (<?maybe
                (if (ifn? value) (apply value args) value)))))
+
+; --- 
 
 (defn logseq* [obj method & args]
   (let [jsargs (mapv clj->js args)
@@ -45,30 +46,52 @@
         (trace method ">" result)
         result))))
 
-(defn with-promise-result [f]
-  (fn [& args]
-    (new js/Promise
-         (fn [resolve reject]
-           (go-promise (try (resolve (wa/<?maybe (apply f args)))
-                    (catch :default e (reject e))))))))
-
 ;; https://logseq.github.io/plugins/modules.html
 
-(def ready (partial logseq* js/logseq :ready))
+; * methods have additional wrappers for additional 
+; argument coersion 
+(def ready* (partial logseq* js/logseq :ready))
 (def settings (partial logseq* js/logseq :settings))
+
+(def show-msg! (partial logseq* js/logseq.App :showMsg))
 (def get-current-block (partial logseq* js/logseq.Editor :getCurrentBlock))
 (def get-current-page (partial logseq* js/logseq.Editor :getCurrentPage))
 (def get-page (partial logseq* js/logseq.Editor :getPage))
 (def get-page-blocks-tree (partial logseq* js/logseq.Editor :getPageBlocksTree))
-
-(def show-msg! (partial logseq* js/logseq.App :showMsg))
+(def register-slash-command* (partial logseq* js/logseq.Editor :registerSlashCommand))
 (def create-page! (partial logseq* js/logseq.Editor :createPage))
 (def insert-editing-at-cursor!  (partial logseq* js/logseq.Editor :insertAtEditingCursor))
 (def insert-block! (partial logseq* js/logseq.Editor :insertBlock))
 (def insert-batch-block! (partial logseq* js/logseq.Editor :insertBatchBlock))
-
-; note: query needs to be passed as string but cljs->js will convert it to a map
+; warn: query needs to be passed as string but cljs->js will convert it to a js-object 
+; use pr-str on query when calling this method. Use datascript-query instead
 (def datascript-query* (partial logseq* js/logseq.DB :datascriptQuery))
+
+
+(def last-error (volatile! nil))
+(defn displaying-errors [f]
+  (fn [& args]
+    (go-promise
+     (<?maybe (try (<?maybe (apply f args))
+                   (catch :default e
+                     (debug "Caught Error: " e)
+                     (j/call js/console :error e)
+                     (vreset! last-error e)
+                     (show-msg! (str "Error:\n"
+                                     (pr-str e)))))))))
+
+(defn with-promise-result [f]
+  (fn [& args]
+    (new js/Promise
+         (fn [resolve reject]
+           (go-promise (try (resolve (<?maybe (apply f args)))
+                    (catch :default e (reject e))))))))
+
+
+(defn ready [callback] (ready* (with-promise-result (displaying-errors callback))))
+(defn register-slash-command! [text callback]
+  (logseq* js/logseq.Editor :registerSlashCommand text (with-promise-result (displaying-errors callback))))
+
 
 ; datascript-query requires entire query to be sent as string and does not
 ; yet support arguments (and thus probably not rules) as workaround 
@@ -80,55 +103,21 @@
     (debug query-string)
     (datascript-query* query-string)))
 
-(defn register-slash-command! [text callback]
-  (logseq* js/logseq.Editor :registerSlashCommand text (with-promise-result callback)))
-
-(def last-error (volatile! nil))
-(defn displaying-errors [f]
-  (fn [& args]
-    (go-promise (try (<?maybe (apply f args))
-                     (catch :default e
-                       (debug "Caught Error: " e)
-                       (j/call js/console :error e)
-                       (vreset! last-error e)
-                       (show-msg! (str "Error:\n" 
-                                       (pr-str e))))))))
-
-
-(defn ensure-page! [page-name]
-  (go-promise
-    (or (<? (get-page page-name)) (<? (create-page! page-name)))))
-
-(defn create-sample-page! []
-  (go-promise (let [page (<? (ensure-page! "Clojure Plugin"))
-            block (<? (insert-block! "Clojure Plugin" "Content" {:isPageBlock true}))
-            {:keys [uuid]} block]
-
-        (<? (insert-batch-block!
-             uuid
-             [{:content "Child 1"}
-              {:content "Child 2"
-               :children [{:content "Grandchild"}]}]))
-
-        (<? (show-msg! "Updated Clojure Plugin page")))))
-
-(defn main []
-  (go-promise
-    (<? (register-slash-command! "Clojure Slash" create-sample-page!))
-    (<? (show-msg! "Hello from Clojure!"))))
-
-(defn init []
-  (go-promise (try (ready main)
-           (catch :default e (j/call js/console :error e)))))
-
-
+;; ===============
 
 (defn get-insert-opts [parent-block]
   (if (empty? (:content parent-block))
     {:sibling true :before true}
     {:sibling false}))
 
-(defn g-insert-block! [parent-block content]
+(defn g-insert-block! 
+  "Allows specifying a function for parent block
+   if block is empty then content is inserted before it (as if inserted at point)
+   if block is not empty then content is inserted as a child
+   
+   (g-insert-block! get-current-block \"testing\")
+   "
+  [parent-block content]
   (go-promise
    (<?maybe
     (let [parent-block (if (ifn? parent-block) (parent-block) parent-block)
@@ -140,11 +129,13 @@
           (insert-block! src-block content opts))
         (js/Error "parent block not found"))))))
 
+
 (defn get-current-journal-page-date
   "Returns date of currently active journal page or nil if not on a journal page"
   []
-  ; get-current-page returns nil on journal instead use
-  ; get page with page id in current  block
+  ; get-current-page returns nil on journal page instead 
+  ; calls get-page with page id of the current block to locate 
+  ; journal page
 
   (go-promise
    (let [{page-property :page} (<?maybe (get-current-block))
@@ -183,12 +174,14 @@
                     {page-id :id} response]
                 (<?maybe (get-page page-id)))))
 
-(set! cljs-playground.core/get-journal-page-for-date (displaying-errors get-journal-page-for-date))
+
 (comment 
+  (set! cljs-playground.core/get-journal-page-for-date (displaying-errors get-journal-page-for-date))
   (go-promise 
    (pprint (<?maybe (get-journal-page-for-date (t/today))))
        )
   )
+
 ; ---
 
 (defonce db
@@ -269,17 +262,12 @@
        (show-msg! (str "No tasks marked complete for " date)))
      (show-msg! "This command must be run from a journal page at the desired insertion point"))))
 
-(set! insert-completed-tasks-for-current-journal-page! 
-      (displaying-errors insert-completed-tasks-for-current-journal-page!))
+
 
 (comment
   (insert-completed-tasks-for-current-journal-page!)
   )
 
-
-(def page-name "Things")
-
-;; ----
 
 (defn find-logseq-things-area-blocks []
   (datascript-query '[:find (pull ?b [*])
@@ -291,6 +279,26 @@
        :where [?b :block/properties ?p]
        [(contains? ?p :things.task/uuid)]]))
 
+;; =============
+
+
+; for now reloads data from things db proxy
+; before running the command. Intended to wrap top
+; level commands to ensure data is current
+; could potentially skip reload if data was recently loaded
+; or ideally implement subscription for real time updates
+(defn with-things-db [f]
+  (fn [& args]
+    (go-promise (<?maybe (go-load-db!))
+                (<?maybe (apply f args)))))
+
+(defn main []
+  (register-slash-command! "Insert Things Logbook" 
+                           (with-things-db insert-completed-tasks-for-current-journal-page!)))
+
+(defn init []
+  (ready  main))
+
 
 (comment
   (count (:eavt @db))
@@ -301,10 +309,10 @@
 
   ; structured pull but no filters on pulll
   (-> (d/q  '[:find
-              (pull ?a [:things.area/title
-                        {:things.task/_area
-                         [:things.task/title
-                          {:things.task/_project [:things.task/title]}]}])
+              [(pull ?a [:things.area/title
+                         {:things.task/_area
+                          [:things.task/title
+                           {:things.task/_project [:things.task/title]}]} ]) ...]
               :where
               [?a :things.area/title "Family"]
               ;[?t :things.task/area ?a]
