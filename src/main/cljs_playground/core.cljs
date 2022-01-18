@@ -7,12 +7,15 @@
    [clojure.set :as set]
    ;[clojure.string]
    [clojure.walk :as walk]
-   ;[com.rpl.specter :as s :refer-macros [select transform]]
+   [com.rpl.specter :as s :refer-macros [select transform]]
    [datascript.core :as d]
    [com.wsscode.async.async-cljs :as wa :refer [go-promise  <? <?maybe]]
    [cljs-time.core :as t]
    [cljs-time.coerce :as tc]
-   [cljs-time.format :as tf]))
+   [cljs-time.format :as tf]
+   ; multi-method needs import even if not used
+   ^:ingore-unused [cljs-time.instant] 
+   ))
 
 
 (def debug (partial println "debug:"))
@@ -36,9 +39,8 @@
         ;_ (trace (str (cons method jsargs)))
         _ (trace (pr-str (cons method args)))
         result (if-not (ifn? v) v
-                  (apply (partial j/call obj method) jsargs))
-         ]
-    
+                       (apply (partial j/call obj method) jsargs))]
+
     (if (instance? js/Promise result)
       (go-promise
        (let [result (wa/<?maybe result)
@@ -79,9 +81,9 @@
   ; for some reason get-current-page is sometimes returnning nil even when I'm on a journal page
   ; I thought maybe it was due to being journal page rather then regular page but it "should" work on 
   ; journal pages as well but I can't seem to rely on it so added this hack as a workaround 
-  (go-promise (or (<?maybe (get-current-page*)) 
+  (go-promise (or (<?maybe (get-current-page*))
                   (do (warn "get-current-page returned nil") nil)
-                  (<?maybe (get-page (get-in (<?maybe get-current-block) [:page :id]))))))
+                  (<?maybe (get-page (get-in (<?maybe (get-current-block)) [:page :id]))))))
 
 
 (def last-error (volatile! nil))
@@ -101,7 +103,7 @@
     (new js/Promise
          (fn [resolve reject]
            (go-promise (try (resolve (<?maybe (apply f args)))
-                    (catch :default e (reject e))))))))
+                            (catch :default e (reject e))))))))
 
 
 (defn ready [callback] (ready* (with-promise-result (displaying-errors callback))))
@@ -119,7 +121,7 @@
 ; query 
 ; see also https://github.com/tonsky/datascript/blob/1.3.5/src/datascript/built_ins.cljc#L40
 ; https://docs.xtdb.com/language-reference/1.20.0/datalog-queries/
-(defn datascript-query [query & [replacements]] 
+(defn datascript-query [query & [replacements]]
   (debug [query replacements])
   (let [query-string (pr-str (clojure.walk/postwalk-replace replacements query))]
     (debug query-string)
@@ -132,7 +134,7 @@
     {:sibling true :before true}
     {:sibling false}))
 
-(defn g-insert-block! 
+(defn g-insert-block!
   "Allows specifying a function for parent block
    if block is empty then content is inserted before it (as if inserted at point)
    if block is not empty then content is inserted as a child
@@ -171,14 +173,12 @@
        (tf/parse (tf/formatters :basic-date) (str journalDay))))))
 
 
-(comment  
+(comment
   (gp (datascript-query '[:find (pull ?p [*]) :where [?p :block/journal-day 20220117]]))
-  
+
   (go-promise (-> (<?maybe
                    (datascript-query '[:find (pull ?p [*]) . :where [?p :block/journal-day 20220117]]))
-                  pprint))
-
-  )
+                  pprint)))
 
 
 ; note: block property in get-page is journalDay
@@ -186,9 +186,15 @@
 (defn get-journal-page-for-date* [date]
   (let [journal-day (int (tf/unparse (tf/formatters :basic-date) date))
         query '[:find (pull ?p [*]) .
-                :where 
+                :where
                 [?p :block/journal-day ::journal-day]
-                [(missing? $ ?p :block/parent )]]]
+                [(missing? $ ?p :block/parent)]
+                ;the missing parent should be enough, but during development I've managed to 
+                ; occassionally create orphan blocks that are assigned to page but not visible
+                ; and these are being picked up instead and then get-page returns nil because
+                ; block returned here was not a page
+                ;[?p :block/file ?f]
+                ]]
     (datascript-query query {::journal-day journal-day})))
 
 ; there seems to be a bug in logseq where uuid does not 
@@ -201,12 +207,10 @@
                 (<?maybe (get-page page-id)))))
 
 
-(comment 
+(comment
   (set! cljs-playground.core/get-journal-page-for-date (displaying-errors get-journal-page-for-date))
-  (go-promise 
-   (pprint (<?maybe (get-journal-page-for-date (t/today))))
-       )
-  )
+  (go-promise
+   (pprint (<?maybe (get-journal-page-for-date (t/today))))))
 
 ; ---
 
@@ -243,37 +247,63 @@
     (str title "\nthings.area/uuid:: " uuid)))
 
 (defn with-status-marker [status title]
-  (str (get {2 "CANCELLED "
+  (str (get {0 "TODO "
+             1 "LATER " ; Scheduled? 
+             2 "CANCELLED "
              3 "DONE "} status "") title))
 
 (defn create-block-for-checklist [checklist]
-  (let [{:things.area/keys [title uuid status]} checklist]
-    (str title "\nthings.checklist/uuid:: " uuid)))
+  (let [{:things.checklist/keys [title uuid status]} checklist]
+    (str (with-status-marker status title) "\nthings.checklist/uuid:: " uuid)))
+
+; to match scheduled date string format
+; from-date seems like it shoudl be unnecesary but getting goog.date objects back from datascript and/or parsing edn from proxy
+; todo; determine if has time and drop hours in some cases getting .getHOurs undefined but not always as seeing times 00:00
+
+(defn to-date-string [instant]
+  (try 
+    (tf/unparse (tf/formatter "yyyy-MM-dd E HH:mm") (tc/from-date instant))
+    ; d.getHours is undefined
+    (catch js/Error e 
+      (tf/unparse (tf/formatter "yyyy-MM-dd") (tc/from-date instant)))))
 
 (defn create-block-for-task [task]
-  (let [{:things.task/keys [title uuid status]} task]
-    (str (with-status-marker status title) "\nthings.task/uuid:: " uuid)))
+  (let [{:things.task/keys [title uuid status startDate stopDate project]} task
+        project-title (:things.task/title project)
+        area-title (get-in project [:things.task/area :things.area/title])]
+    (str (with-status-marker status title) "\nthings.task/uuid:: " uuid
+         (and startDate (str "\nthins.task/startDate:: " (to-date-string startDate)))
+         (and stopDate (str "\nthings.task/stopDate:: " (to-date-string stopDate)))
+         ; projects are also tasks so some ambiguity in things.task/title 
+         ; changing to things.project/title here... 
+         ; todo consider creating project as item in db
+         (and project-title (str "\nthings.project/title:: [[" project-title "]]"))
+         (and project-title (str "\nthings.area/title:: [[" area-title "]]")))))
 
 (defn get-completed-tasks [date]
-  (d/q '[:find
-         [(pull ?t
-                [*]) ...]
-         :in $ ?from ?to
-         :where
-         [?t :things.task/uuid]
-         [?t :things.task/stopDate ?sd]
-         [(<= ?from ?sd)]
-         [(< ?sd ?to)]] 
-       @db 
-       (tc/to-date date) 
-       (t/plus date (t/days 1))))
+  (->>
+   (d/q '[:find
+          [(pull ?t
+                 [* {:things.checklist/_task [*]
+
+                     :things.task/project [:things.task/title
+                                           {:things.task/area [:things.area/title]}]}]) ...]
+          :in $ ?from ?to
+          :where
+          [?t :things.task/uuid]
+          [?t :things.task/stopDate ?sd]
+          [(<= ?from ?sd)]
+          [(< ?sd ?to)]]
+        @db
+        (tc/to-date date)
+        (t/plus date (t/days 1)))
+   (s/setval [s/ALL (s/map-key :things.checklist/_task)] :things.task/checklist)))
 
 (comment
 
   (->> (get-completed-tasks (t/today))
        (mapv create-block-for-task)
-       (pprint))
-)
+       (pprint)))
 
 (defn find-existing-tasks-on-page [page]
   (go-promise
@@ -287,26 +317,37 @@
                      [(contains? ?p :things.task/uuid)]
                      [?b :block/page ::page]]
                    {::page (:id page)}))]
-     matching-block-properties
-     )))
+     matching-block-properties)))
 
 ;(set! find-existing-tasks-on-page (displaying-errors find-existing-tasks-on-page))
 ;(gp find-existing-tasks-on-page get-current-page)
 
 (defn get-or-create-logbook-heading-block! [journal-page]
-  (let [{journal-page-id :id} journal-page]
-    (go-promise
-     (if-let [block-id (<?maybe
-                        (datascript-query
-                         '[:find  ?b .
-                           :where
-                           [?b :block/page ::journal-page-id]
-                           [?b :block/content ?c]
-                           [(clojure.string/includes? ?c "Things Logbook")]]
-                         {::journal-page-id journal-page-id}))]
-       (<?maybe (get-block block-id))
-       (<?maybe (insert-block! (:name journal-page) "[[Things Logbook]]" {:isPageBlock true}))))))
+  (go-promise
+   (<?maybe
+    (let [journal-page (<?maybe (if (fn? journal-page) (journal-page) journal-page))
+          {journal-page-id :id} journal-page]
+      (if-let [block-id (<?maybe
+                         (datascript-query
+                          '[:find  ?b .
+                            :where
+                            [?b :block/page ::journal-page-id]
+                            [?b :block/content ?c]
+                            [(clojure.string/includes? ?c "Things Logbook")]]
+                          {::journal-page-id journal-page-id}))]
+        (get-block block-id)
+        (insert-block! (:name journal-page) "[[Things Logbook]]" {:isPageBlock true}))))))
 
+(defn insert-task-children! [task-block task]
+  (go-promise
+   (<?maybe
+    (let [notes  (:things.task/notes task)
+          checklists (:things.task/checklist task)]
+      ;(debug (pr-str [::notes notes ::task task ::task-block]))
+      (when-not (empty? notes) (<?maybe (g-insert-block! task-block notes)))
+      (doseq [checklist checklists
+              :let [block (create-block-for-checklist checklist)]]
+        (<?maybe (g-insert-block! task-block block)))))))
 
 ; (set! get-or-create-logbook-heading-block! (displaying-errors get-or-create-logbook-heading-block!))
 (defn insert-completed-tasks-for-current-journal-page!
@@ -314,35 +355,41 @@
   (go-promise
    (if-let [date (<?maybe (get-current-journal-page-date))]
      (let [journal-page (<?maybe (get-journal-page-for-date date))
+           _ (assert journal-page "Journal page is nil, try reindex")
+           _ (debug :journal-page journal-page)
            tasks (seq (<?maybe (get-completed-tasks date)))
-           _ (debug :tasks tasks)
            tasks-on-page (<?maybe (find-existing-tasks-on-page journal-page))
-           _ (debug ::tasks-on-page tasks-on-page)
            {tasks-to-insert false tasks-to-update true}
-           (group-by  #(contains? tasks-on-page (:things.task/uuid %)) tasks)
-           _ (debug ::tasks-to-insert tasks-to-insert ::tasks-to-update tasks-on-page)]
+           (group-by  #(contains? tasks-on-page (:things.task/uuid %)) tasks)]
        (let [heading-block (<?maybe (get-or-create-logbook-heading-block! journal-page))]
-         (doseq [block (mapv create-block-for-task tasks-to-insert)]
-           (<?maybe (g-insert-block! heading-block block)))
+         (doseq [task tasks-to-insert]
+           (let [block (create-block-for-task task)
+                 task-block (<?maybe (g-insert-block! heading-block block))]
+             (debug :task task :task-block)
+             (insert-task-children! task-block task)
+             task-block)
+           ;todo: maybe update existing tasks? in theory if they are done they shouldn't change
+           ;todo: should I check to see if user uncompleted task and delete it
+           )
+         
          (show-msg! (str "Logbook updated"))))
      (show-msg! "This command must be run from a journal page"))))
 
 
 (comment
   (set! insert-completed-tasks-for-current-journal-page! (displaying-errors insert-completed-tasks-for-current-journal-page!))
-  (gp insert-completed-tasks-for-current-journal-page!)
-  )
+  (gp insert-completed-tasks-for-current-journal-page!))
 
 
 (defn find-logseq-things-area-blocks []
   (datascript-query '[:find (pull ?b [*])
-       :where [?b :block/properties ?p]
-       [(contains? ?p :things.area/uuid)]]))
+                      :where [?b :block/properties ?p]
+                      [(contains? ?p :things.area/uuid)]]))
 
 (defn find-logseq-things-task-blocks []
   (datascript-query '[:find (pull ?b [*])
-       :where [?b :block/properties ?p]
-       [(contains? ?p :things.task/uuid)]]))
+                      :where [?b :block/properties ?p]
+                      [(contains? ?p :things.task/uuid)]]))
 
 ;; =============
 
@@ -359,7 +406,7 @@
 
 (defn main []
   (register-slash-command! "Insert Things Logbook"
-                             (with-things-db insert-completed-tasks-for-current-journal-page!))
+                           (with-things-db insert-completed-tasks-for-current-journal-page!))
   (register-command-palette! {:key "insert-things-logbook" :label "Insert Things Logbook" :keybinding "Shift+Cmd+L"}
                              (with-things-db insert-completed-tasks-for-current-journal-page!)))
 
@@ -405,7 +452,7 @@
       pprint))
 
 
-  
+
   (gp datascript-query '[:find [(pull ?b [*]) ...] :where
                          (or-join [?b ?m]
                                   (and [?b :block/marker ?m]
@@ -413,7 +460,7 @@
                                        [?b :block/scheduled ?d])
                                   (and [?b :block/marker ?m]
                                        [(contains? #{"NOW"} ?m)]))])
-  
+
   ;
   ;
   )
