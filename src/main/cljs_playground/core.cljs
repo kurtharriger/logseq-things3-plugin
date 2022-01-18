@@ -15,8 +15,9 @@
 
 
 (def debug (partial println "debug:"))
-;(def trace (partial println "trace:"))
-(def trace (constantly nil))
+(def warn (partial println "warn:"))
+(def trace (partial println "trace:"))
+;(def trace (constantly nil))
 (defn gp [value & args]
   (go-promise (pprint (<?maybe
                (if (ifn? value) (apply value args) value)))))
@@ -26,18 +27,21 @@
 (defn logseq* [obj method & args]
   (let [jsargs (mapv clj->js args)
         v (j/get obj method)
-        _ (trace "(" method (mapv pr-str args) ")")
-        _ (trace "(" method (mapv pr-str jsargs) ")")
+        ;_ (trace (str (cons method jsargs)))
+        _ (trace (pr-str (cons method args)))
         result (if-not (ifn? v) v
                   (apply (partial j/call obj method) jsargs))
          ]
-    (trace method ">>" result)
+    
     (if (instance? js/Promise result)
       (go-promise
-       (let [result (js->clj (wa/<?maybe result) :keywordize-keys true)]
+       (let [result (wa/<?maybe result)
+             ;_ (trace method ">>" result) 
+             result (js->clj result :keywordize-keys true)]
          (trace method ">" result)
          result))
-      (let [result (js->clj result :keywordize-keys true)]
+      (let [;_ (trace method ">>" result) 
+            result (js->clj result :keywordize-keys true)]
         (trace method ">" result)
         result))))
 
@@ -49,8 +53,11 @@
 (def settings (partial logseq* js/logseq :settings))
 
 (def show-msg! (partial logseq* js/logseq.App :showMsg))
+(def register-command*! (partial logseq* js/logseq.App :registerCommand))
+(def register-command-palette*! (partial logseq* js/logseq.App :registerCommandPalette))
 (def get-current-block (partial logseq* js/logseq.Editor :getCurrentBlock))
-(def get-current-page (partial logseq* js/logseq.Editor :getCurrentPage))
+(def get-current-page* (partial logseq* js/logseq.Editor :getCurrentPage))
+(def get-block (partial logseq* js/logseq.Editor :getBlock))
 (def get-page (partial logseq* js/logseq.Editor :getPage))
 (def get-page-blocks-tree (partial logseq* js/logseq.Editor :getPageBlocksTree))
 (def register-slash-command* (partial logseq* js/logseq.Editor :registerSlashCommand))
@@ -61,6 +68,14 @@
 ; warn: query needs to be passed as string but cljs->js will convert it to a js-object 
 ; use pr-str on query when calling this method. Use datascript-query instead
 (def datascript-query* (partial logseq* js/logseq.DB :datascriptQuery))
+
+(defn get-current-page []
+  ; for some reason get-current-page is sometimes returnning nil even when I'm on a journal page
+  ; I thought maybe it was due to being journal page rather then regular page but it "should" work on 
+  ; journal pages as well but I can't seem to rely on it so added this hack as a workaround 
+  (go-promise (or (<?maybe (get-current-page*)) 
+                  (do (warn "get-current-page returned nil") nil)
+                  (<?maybe (get-page (get-in (<?maybe get-current-block) [:page :id]))))))
 
 
 (def last-error (volatile! nil))
@@ -84,14 +99,19 @@
 
 
 (defn ready [callback] (ready* (with-promise-result (displaying-errors callback))))
+(defn register-command-palette! [opts callback]
+  (register-command-palette*! opts (with-promise-result (displaying-errors callback))))
+
 (defn register-slash-command! [text callback]
   (logseq* js/logseq.Editor :registerSlashCommand text (with-promise-result (displaying-errors callback))))
+
 
 
 ; datascript-query requires entire query to be sent as string and does not
 ; yet support arguments (and thus probably not rules) as workaround 
 ; use ::token-name in query and then pass in replacements to update the 
-; query eg
+; query 
+; see also https://github.com/tonsky/datascript/blob/1.3.5/src/datascript/built_ins.cljc#L40
 (defn datascript-query [query & [replacements]] 
   (debug [query replacements])
   (let [query-string (pr-str (clojure.walk/postwalk-replace replacements query))]
@@ -115,8 +135,9 @@
   [parent-block content]
   (go-promise
    (<?maybe
-    (let [parent-block (if (ifn? parent-block) (parent-block) parent-block)
-          parent-block (<?maybe parent-block)]
+    (let [parent-block (if (fn? parent-block) (parent-block) parent-block)
+          parent-block (<?maybe parent-block)
+          _ (debug :parent-block parent-block :uuid (:uuid parent-block))]
       (if parent-block
         (let [src-block (:uuid parent-block)
               opts (get-insert-opts parent-block)]
@@ -124,6 +145,7 @@
           (insert-block! src-block content opts))
         (js/Error "parent block not found"))))))
 
+;(set! g-insert-block! (displaying-errors g-insert-block!))
 
 (defn get-current-journal-page-date
   "Returns date of currently active journal page or nil if not on a journal page"
@@ -142,7 +164,7 @@
        (tf/parse (tf/formatters :basic-date) (str journalDay))))))
 
 
-(comment 
+(comment  
   (gp (datascript-query '[:find (pull ?p [*]) :where [?p :block/journal-day 20220117]]))
   
   (go-promise (-> (<?maybe
@@ -157,7 +179,9 @@
 (defn get-journal-page-for-date* [date]
   (let [journal-day (int (tf/unparse (tf/formatters :basic-date) date))
         query '[:find (pull ?p [*]) .
-                :where [?p :block/journal-day ::journal-day]]]
+                :where 
+                [?p :block/journal-day ::journal-day]
+                [(missing? $ ?p :block/parent )]]]
     (datascript-query query {::journal-day journal-day})))
 
 ; there seems to be a bug in logseq where uuid does not 
@@ -243,23 +267,48 @@
        (mapv create-block-for-task)
        (pprint))
 )
-  
 
+
+  
+(defn get-or-create-logbook-heading-block! [journal-page]
+  (let [{journal-page-id :id} journal-page]
+    (go-promise
+     (if-let [block-id (<?maybe
+                        (datascript-query
+                         '[:find  ?b .
+                           :where
+                           [?b :block/page ::journal-page-id]
+                           [?b :block/content ?c]
+                           [(clojure.string/includes? ?c "Things Logbook")]]
+                         {::journal-page-id journal-page-id}))]
+       (<?maybe (get-block block-id))
+       (<?maybe (insert-block! (:name journal-page) "[[Things Logbook]]" {:isPageBlock true}))))))
+
+
+; (set! get-or-create-logbook-heading-block! (displaying-errors get-or-create-logbook-heading-block!))
 (defn insert-completed-tasks-for-current-journal-page!
   []
   (go-promise
    (if-let [date (<?maybe (get-current-journal-page-date))]
-     (if-let [tasks (<?maybe (get-completed-tasks date))]
-       (doseq [block (mapv create-block-for-task tasks)]
-         (debug block)
-         (<?maybe (g-insert-block! get-current-block block)))
-            ; todo format date
-       (show-msg! (str "No tasks marked complete for " date)))
+     (let [journal-page (<?maybe (get-journal-page-for-date date))
+           tasks (seq (<?maybe (get-completed-tasks date)))
+           ;_ (debug :tasks tasks)
+           ]
+       (if tasks
+        (let [heading-block (<?maybe (get-or-create-logbook-heading-block! journal-page))
+              ;_ (debug :heading-block heading-block)
+              ]
+          (doseq [block (mapv create-block-for-task tasks)]
+            (debug :block block)
+            (<?maybe (g-insert-block! heading-block block))
+            (println :inserted)))
+         (show-msg! (str "No tasks marked complete for " (:originalName journal-page)))))
      (show-msg! "This command must be run from a journal page at the desired insertion point"))))
 
 
 
 (comment
+  (set! insert-completed-tasks-for-current-journal-page! (displaying-errors insert-completed-tasks-for-current-journal-page!))
   (insert-completed-tasks-for-current-journal-page!)
   )
 
@@ -288,8 +337,10 @@
                 (<?maybe (apply f args)))))
 
 (defn main []
-  (register-slash-command! "Insert Things Logbook" 
-                           (with-things-db insert-completed-tasks-for-current-journal-page!)))
+  (register-slash-command! "Insert Things Logbook"
+                             (with-things-db insert-completed-tasks-for-current-journal-page!))
+  (register-command-palette! {:key "insert-things-logbook" :label "Insert Things Logbook" :keybinding "Shift+Cmd+L"}
+                             (with-things-db insert-completed-tasks-for-current-journal-page!)))
 
 (defn init []
   (ready  main))
