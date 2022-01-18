@@ -16,8 +16,6 @@ https://github.com/kurtharriger/logseq-things3-query-proxy
 
 ## Notes and potential roadmap 
 
-- Currently inserting the logbook will always insert all completed tasks for that day even if that task already exists on the page.  You can delete the tasks before reimporting them, but appending to the existing list is next up.  
-  
 - More properties.  Include project, area, start end date, notes and checklists and thigns url for linking to task in things.
 
 - Group task by area and project

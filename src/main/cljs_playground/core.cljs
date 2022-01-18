@@ -4,6 +4,7 @@
    [cljs-http.client :as http]
    [cljs.reader :refer [read-string]]
    [clojure.pprint :refer [pprint]]
+   [clojure.set :as set]
    ;[clojure.string]
    [clojure.walk :as walk]
    ;[com.rpl.specter :as s :refer-macros [select transform]]
@@ -16,11 +17,16 @@
 
 (def debug (partial println "debug:"))
 (def warn (partial println "warn:"))
-(def trace (partial println "trace:"))
-;(def trace (constantly nil))
+;(def trace (partial println "trace:"))
+(def trace (constantly nil))
+; go and print 
+(def last-gp (volatile! nil))
 (defn gp [value & args]
-  (go-promise (pprint (<?maybe
-               (if (ifn? value) (apply value args) value)))))
+  (go-promise (let [r (<?maybe
+                       (if (ifn? value) (apply value args) value))]
+                (vreset! last-gp r)
+                (pprint r)
+                r)))
 
 ; --- 
 
@@ -112,6 +118,7 @@
 ; use ::token-name in query and then pass in replacements to update the 
 ; query 
 ; see also https://github.com/tonsky/datascript/blob/1.3.5/src/datascript/built_ins.cljc#L40
+; https://docs.xtdb.com/language-reference/1.20.0/datalog-queries/
 (defn datascript-query [query & [replacements]] 
   (debug [query replacements])
   (let [query-string (pr-str (clojure.walk/postwalk-replace replacements query))]
@@ -268,8 +275,29 @@
        (pprint))
 )
 
+(defn find-existing-tasks-on-page [page]
+  (go-promise
+   (let [page (<?maybe (if (fn? page) (page) page))
+         matching-block-properties
+         (<?maybe (datascript-query
+                   '[:find [?p ...]
+                     :where
+                     [?b :block/properties ?p]
+                 ; get-in doesn't seem to work, will extract from properties after query
+                     ;https://discord.com/channels/725182569297215569/853262815727976458/933024610528677979
+                 ;[(get-in ?p :things.task/uuid) ?u]
+                     [(contains? ?p :things.task/uuid)]
+                     [?b :block/page ::page]]
+                   {::page (:id page)}))]
+     ;note namespace is lost when properties are converted to javascript
+     ;https://discord.com/channels/725182569297215569/853262815727976458/933028976539090974
+     ;check namespaced key first then fallback to unqualified
+     (set (map #(some % [:things.task/uuid :uuid]) matching-block-properties))
+     )))
 
-  
+;(set! find-existing-tasks-on-page (displaying-errors find-existing-tasks-on-page))
+;(gp find-existing-tasks-on-page get-current-page)
+
 (defn get-or-create-logbook-heading-block! [journal-page]
   (let [{journal-page-id :id} journal-page]
     (go-promise
@@ -292,24 +320,22 @@
    (if-let [date (<?maybe (get-current-journal-page-date))]
      (let [journal-page (<?maybe (get-journal-page-for-date date))
            tasks (seq (<?maybe (get-completed-tasks date)))
-           ;_ (debug :tasks tasks)
-           ]
-       (if tasks
-        (let [heading-block (<?maybe (get-or-create-logbook-heading-block! journal-page))
-              ;_ (debug :heading-block heading-block)
-              ]
-          (doseq [block (mapv create-block-for-task tasks)]
-            (debug :block block)
-            (<?maybe (g-insert-block! heading-block block))
-            (println :inserted)))
-         (show-msg! (str "No tasks marked complete for " (:originalName journal-page)))))
-     (show-msg! "This command must be run from a journal page at the desired insertion point"))))
-
+           _ (debug :tasks tasks)
+           tasks-on-page (<?maybe (find-existing-tasks-on-page journal-page))
+           _ (debug ::tasks-on-page tasks-on-page)
+           {tasks-to-insert false tasks-to-update true}
+           (group-by  #(contains? tasks-on-page (:things.task/uuid %)) tasks)
+           _ (debug ::tasks-to-insert tasks-to-insert ::tasks-to-update tasks-on-page)]
+       (let [heading-block (<?maybe (get-or-create-logbook-heading-block! journal-page))]
+         (doseq [block (mapv create-block-for-task tasks-to-insert)]
+           (<?maybe (g-insert-block! heading-block block)))
+         (show-msg! (str "Logbook updated"))))
+     (show-msg! "This command must be run from a journal page"))))
 
 
 (comment
   (set! insert-completed-tasks-for-current-journal-page! (displaying-errors insert-completed-tasks-for-current-journal-page!))
-  (insert-completed-tasks-for-current-journal-page!)
+  (gp insert-completed-tasks-for-current-journal-page!)
   )
 
 
@@ -351,14 +377,14 @@
   (d/q '[:find (count ?e) .  :where [?e :things.area/uuid]] @db)
   (d/q '[:find (count ?e) .  :where [?e :things.task/uuid]] @db)
   (d/q '[:find (count ?e) .  :where [?e :things.checklist/uuid]] @db)
-  
+
 
   ; structured pull but no filters on pulll
   (-> (d/q  '[:find
               [(pull ?a [:things.area/title
                          {:things.task/_area
                           [:things.task/title
-                           {:things.task/_project [:things.task/title]}]} ]) ...]
+                           {:things.task/_project [:things.task/title]}]}]) ...]
               :where
               [?a :things.area/title "Family"]
               ;[?t :things.task/area ?a]
@@ -384,7 +410,15 @@
       pprint))
 
 
-
-
+  
+  (gp datascript-query '[:find [(pull ?b [*]) ...] :where
+                         (or-join [?b ?m]
+                                  (and [?b :block/marker ?m]
+                                       [(contains? #{"NOW" "LATER"} ?m)]
+                                       [?b :block/scheduled ?d])
+                                  (and [?b :block/marker ?m]
+                                       [(contains? #{"NOW"} ?m)]))])
+  
+  ;
   ;
   )
