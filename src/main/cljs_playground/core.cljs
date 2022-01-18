@@ -290,8 +290,8 @@
      matching-block-properties
      )))
 
-(set! find-existing-tasks-on-page (displaying-errors find-existing-tasks-on-page))
-(gp find-existing-tasks-on-page get-current-page)
+;(set! find-existing-tasks-on-page (displaying-errors find-existing-tasks-on-page))
+;(gp find-existing-tasks-on-page get-current-page)
 
 (defn get-or-create-logbook-heading-block! [journal-page]
   (let [{journal-page-id :id} journal-page]
