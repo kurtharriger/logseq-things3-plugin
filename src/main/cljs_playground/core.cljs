@@ -280,23 +280,18 @@
    (let [page (<?maybe (if (fn? page) (page) page))
          matching-block-properties
          (<?maybe (datascript-query
-                   '[:find [?p ...]
+                   '[:find [?u ...]
                      :where
                      [?b :block/properties ?p]
-                 ; get-in doesn't seem to work, will extract from properties after query
-                     ;https://discord.com/channels/725182569297215569/853262815727976458/933024610528677979
-                 ;[(get-in ?p :things.task/uuid) ?u]
+                     [(get ?p :things.task/uuid) ?u]
                      [(contains? ?p :things.task/uuid)]
                      [?b :block/page ::page]]
                    {::page (:id page)}))]
-     ;note namespace is lost when properties are converted to javascript
-     ;https://discord.com/channels/725182569297215569/853262815727976458/933028976539090974
-     ;check namespaced key first then fallback to unqualified
-     (set (map #(some % [:things.task/uuid :uuid]) matching-block-properties))
+     matching-block-properties
      )))
 
-;(set! find-existing-tasks-on-page (displaying-errors find-existing-tasks-on-page))
-;(gp find-existing-tasks-on-page get-current-page)
+(set! find-existing-tasks-on-page (displaying-errors find-existing-tasks-on-page))
+(gp find-existing-tasks-on-page get-current-page)
 
 (defn get-or-create-logbook-heading-block! [journal-page]
   (let [{journal-page-id :id} journal-page]
