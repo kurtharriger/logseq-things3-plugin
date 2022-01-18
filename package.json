@@ -1,15 +1,14 @@
 {
-  "name": "logseq-cljs-playground",
+  "name": "logseq-things3-plugin",
   "version": "0.0.1",
-  "private": true,
   "main": "index.html",
-  "author": "Tienson Qin",
+  "author": "Kut Harriger",
   "license": "MIT",
   "devDependencies": {
     "shadow-cljs": "2.16.2"
   },
   "logseq": {
-    "id": "_byud67luv"
+    "id": "_e835adb96"
   },
   "scripts": {
     "watch": "npx shadow-cljs watch app",
