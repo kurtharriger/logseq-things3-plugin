@@ -11,7 +11,7 @@ Import completed items into Journal Page
 Logseq sandboxes plugins preventing them from accessing the file system and thus the Things 3 database.  As a workaround, I have also developed a companion app that exposes the Things 3 database
 via http server.  
 
-https://github.com/kurtharriger/logseq-things3-query-proxy
+https://github.com/kurtharriger/logseq-things3-query-proxy - use poc branch
 
 
 ## Notes and potential roadmap 
